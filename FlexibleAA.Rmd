@@ -1,0 +1,441 @@
+---
+title: "Flexible Asset Allocation"
+author: "Rex Macey"
+date: "August 8, 2015"
+output: html_document
+runtime: shiny
+---
+This document analyzes a flexible asset allocation that promises significant reduction in downside risk while still allowing for attractive returns. This approach combines momentum to enhance return with a rule to avoid assets as they fall to provide protection.  
+
+This is a dynamic and interactive document.  It retrieves data as it is run (but it only uses monthly data).  Also, the reader may change some of the parameters to see the impact on the results. 
+
+### Literature Review
+Many of the ideas for this analysis come from the following sources:  
+* [A Century of Evidence on Trend-Following Investing by Hurst, Ooi and Pedersen (2014)](https://www.aqr.com/~/media/files/papers/aqr-a-century-of-trend-following-investing.pdf)  
+* [Dynamic Strategies for Asset Allocation by Perold and Sharpe (1988)](https://web.stanford.edu/class/msande348/papers/PeroldSharpe.pdf)  
+* [Absolute Momentum: a Simple Rule-Based Strategy and Universal Trend-Following Overlay by Gary Antonacci (2013)](http://www.naaim.org/wp-content/uploads/2013/10/00D_Absolute-Momentum_gary_antonacci.pdf)  
+* [Risk Premia Harvesting Through dual Momentum by Gary Antonacci (2013)](https://www.etf360.fr/images/etf/education/recherche/risk_premia_harvesting_through_dual_momentum.pdf)  
+* [Generalized Momentum and Flexible Asset Allocation: An Heuristic Approach by Keller and Van Putten](http://papers.ssrn.com/sol3/papers.cfm?abstract_id=2193735)  
+* [The Minimum Correlation Algorithm: A Practical Diversification Tool by Varadi, Kapler, Bee and Rittenhouse (2012)](http://cssanalytics.com/doc/MCA%20Paper.pdf)  
+
+### Disclaimer
+This information is provided for educational and discussion purposes.  No investment advice is provided.  Past performance is no guarantee of future performance.  The future will differ from the past. 
+
+### Data
+```{r, echo=FALSE, results='hide', include=FALSE}
+library(zoo, quietly=T)
+library(xts, quietly=T)
+library(timeSeries, quietly=T)
+library(lubridate, quietly=T)
+library(quantmod, quietly=T)
+library(PerformanceAnalytics, quietly=T)
+library(shiny, quietly = T)
+library(shinyapps, quietly = T)
+source("faa.r")
+source("mincorrportfolio.r")
+source("momentum.r")
+Sys.setenv(TZ="UTC")
+
+ldom<-function(d){ #find last day of month to use
+    #if d is the last day of the month return d; otherwise return last day of previous month
+    if (format(d,"%m")!=format(d+1,"%m")) return(d)
+    if (weekdays(d)=="Friday" & format(d,"%m")!=format(d+2,"%m")) {
+        return(d)
+    } else {
+        return(as.Date(format(d,"%Y-%m-01"))-1)
+    }
+}
+trial<-function(ac.returns.monthly,n.top,n.mos,n.ac){
+    returns<-ac.returns.monthly[,1] #just to create xts container with correct dates
+    for (i in 1:n.mos){
+        returns[i]<-mean(ac.returns.monthly[i,sample(seq(1,n.ac),n.top,replace=F)])
+    }
+    result<-list()
+    result$Return<-Return.annualized(returns)
+    result$MaxDD<-maxDrawdown(returns)
+    return(result)
+}
+
+mcs<-function(ac.returns.monthly, n.trials,n.top){
+    n.mos<-length(ac.returns.monthly[,1])
+    n.ac<-ncol(ac.returns.monthly)
+    mc.results<-matrix(data=NA,nrow<-n.trials,ncol<-2,dimnames=list(seq(1,n.trials),c("Return","MaxDD")))
+    for (i in 1:n.trials){
+        trial_result<-trial(ac.returns.monthly,n.top,n.mos,n.ac)
+        mc.results[i,"Return"]<-trial_result$Return
+        mc.results[i,"MaxDD"]<-trial_result$MaxDD
+    }
+    return(mc.results)
+}
+
+randomtest.plot<-function(faa.returns,n.top,n.trials=1000){
+    set.seed(101)
+    ac.returns.monthly<-mom_ac_hist_ret(data,1)
+    n.classes<-ncol(ac.returns.monthly)
+    mcs_results<-mcs(ac.returns.monthly,n.trials,n.top)
+    X.min<-floor(min(maxDrawdown(faa.returns),min(mcs_results[,"MaxDD"]))*100)/100
+    X.max<-ceiling(max(maxDrawdown(faa.returns),max(mcs_results[,"MaxDD"]))*100)/100
+    Y.min<-floor(min(Return.annualized(faa.returns),min(mcs_results[,"Return"]))*100)/100
+    Y.max<-ceiling(max(Return.annualized(faa.returns),max(mcs_results[,"Return"]))*100)/100
+    plot(mcs_results[,"MaxDD"],mcs_results[,"Return"],col="gray",xlab="Max Drawdown",
+        ylab="Annual Return",main=paste("FAA v",n.trials,"Random Outcomes"),
+        xlim=c(X.min,X.max),ylim=c(Y.min,Y.max))
+    points(maxDrawdown(faa.returns)[1],Return.annualized(faa.returns)[1],col="blue",pch=2)
+    points(maxDrawdown(faa.returns)[2],Return.annualized(faa.returns)[2],col="black",pch=3)
+    points(maxDrawdown(faa.returns)[3:9],Return.annualized(faa.returns)[3:9],col="red",pch=4)
+    legend("topright",inset=.05,legend=c("Random","FAA","EqWt","AC"),pch=c(1,2,3,4),
+           col=c("gray","blue","black","red"))
+    text(maxDrawdown(faa.returns)[1]+.05,Return.annualized(faa.returns)[1],"FAA",col="blue")
+    text(maxDrawdown(faa.returns)[2]+.05,Return.annualized(faa.returns)[2],"EqWt",col="black")
+    for (i in 1:n.classes){
+        text(maxDrawdown(faa.returns)[i+2]+.05,Return.annualized(faa.returns)[i+2],sec.names[i],col="red")
+    }
+}
+symbols <- c("VFINX",  #SP500 1995-01-03
+             "VEURX",  #Europe
+             "VEIEX",  #Emerging 1995-01-03
+             "VFISX",  #ST TSY 1995-01-03
+             "QRAAX",  #Commod 1997-03-31
+             "VGSIX")   #REIT 1996-05-13 
+
+prices<-getSymbols(symbols,warnings=FALSE, from="1997-03-31")
+    data<-xts()
+    for (symbol in symbols){
+        cat(symbol,"\n")
+        data<-merge(data,Ad(get(symbol)))
+        temp<-as.character(symbol)
+        #rm(list=temp)
+    }
+    
+colnames(data)<-c("SP5","EUR","EM","STTSY","COMMOD","REIT") #symbols
+sec.names<-c("SP5","EUR","EM","STTSY","COMMOD","REIT") #symbols
+```
+Six asset classes are represented.  The asset classes include global equities, commodities, REITs, and bonds.  The specific securities were chosen for their breadth and/or longevity.  Their price history is shown graphically.
+
+Asset Class            | Ticker | Security Name                           | Abbrev.
+-----------------------|--------|-----------------------------------------|--------
+US Stocks              | VFINX  | Vanguard 500 Index Inv                  | SP5
+European Stocks        | VEURX  | Vanguard European Stock Index Inv       | EUR
+Emerging Market Stocks | VEIEX  | Vanguard Emerging Mkts Stock Idx Inv    | EM
+Commodities            | QRAAX  | Oppenheimer Commodity Strat Total Ret A | COMMOD
+REITS                  | VGSIX  | Vanguard REIT Index Inv                 | REIT
+Short-Term Treasuries  | VFISX  | Vanguard Short-Term Treasury Inv        | STTYS
+
+```{r, echo=FALSE}
+date.first<-index(data[1,])
+date.first.c<-as.character(date.first,"%m/%d/%Y")
+date.last<-ldom(index(last(data)))
+date.last.c<-as.character(date.last,"%m/%d/%Y")
+data<-data[paste("/",as.character(date.last,"%Y-%m-%d"),sep="")]
+title<-paste("Price History from ",date.first.c,"thru",date.last.c)
+plot(as.zoo(data),main=title, xlab="Time",log="y",col="blue")
+```
+
+### Methodology
+This is an outline of the method used to construct and rebalance the portfolio. Calculate the historical returns over a lookback period (e.g., 4 months) for each asset class. Using daily data, compute their standard deviations (SD) and average correlations with the other classes noting that each statistic may use a different lookback period.  The daily standard deviation is multiplied by a scaling factor to match the period of the return.  Each asset class is scored according to the Return/SD * Wt1 - MeanCorrelation * Wt2.  The asset classes are ranked with the highest score being the best. The top n (e.g. 3) are chosen.  If any of these asset classes have lost value (i.e., have a negative return) over the lookback period for the return, then it is replaced by the short-term Treasury investment. The minimum correlation algorithm is used to weight the assets in the portfolio.  The transaction cost here is a one-way transaction cost.
+
+Note: Some of the methods described in the literature weight the return and the standard deviation individually. This implementation uses Return/SD for two reasons.  This normalizes each asset class according to its standard deviation. Momentum here is being measured in terms of number of standard deviations. From our perspective an asset class that returns 9% when its standard deviation is 5% is showing greater strength than an asset class that returns 10% when its standard deviation is 10%. The second reason is that we eliminate a weighting parameter which we appreciate Occam's razor.  
+
+```{r, echo=FALSE}
+    lookback<-c(4,2,1)
+    wt<-c(1,0,0)
+    n.top<-3
+    cash.col<-4
+    safe.ac<-cash.col
+    data.type<-"prices"
+    tc<-0.002
+    temp<-faa(data,lookback,wt,n.top,cash.col,data.type,tc)
+    names(temp$returns)[1]<-"Strategy"
+    names(temp$returns)[2]<-"Benchmark"
+    faa.returns<-temp$returns
+    timespan<-paste("The following results are based on returns from",format(index(first(faa.returns)),"%b %Y"),"thru",
+                             format(index(last(faa.returns)),"%b %Y"),".")
+```
+### Historical Performance
+First we will focus on the period ending July 2015 which is the most recent month end at the time of this writing.  Following this is a section that allows the reader to adjust the parameters to see the effect on the results through whatever month-end happens to be the most recent.  The lookback for returns, volatility, and correlation are set at 4,2, and 1 months respectively.  The weighting of Return/SD is 1.0 and 0 for correlation (effectively removing average correlation from the scoring).  We invest in the top 3 asset classes and assume transaction costs of 0.2% each way. A benchmark composed of equal weighting the six asset classes is shown for comparison.  `r timespan'
+
+#### Summary Returns and Drawdowns
+Note the strategy has a higher return than any individual asset class and the benchmark.  It has a much lower maximum drawdown than any asset class other than short term Treasuries.  
+```{r, echo=FALSE}
+    round(rbind(Return.annualized(temp$returns),maxDrawdown(temp$returns))*100,1)
+```
+
+#### Cumulative Wealth, Monthly Returns, and Drawdowns
+The top panel in the following shows the growth of $1, the middle panel shows the monthly returns, and the bottom panel shows the drawdown since the previous high. 
+
+```{r, echo=FALSE}
+    title<-paste("Performance Summary from",format(index(first(temp$returns)),"%b %Y"),"thru",
+                 format(index(last(temp$returns)),"%b %Y"))
+    charts.PerformanceSummary(temp$returns[,1:2], main=title,
+                 geometric=FALSE, wealth.index=TRUE,ylog=TRUE,colorset=bluefocus)
+```
+
+#### Rolling Performance
+Below are the rolling returns, standard deviations and Sharpe ratios using a 12 month window.  
+```{r, echo=FALSE}
+    charts.RollingPerformance(temp$returns[,1:2],Rf=temp$returns[,4,drop=FALSE],12,
+                                          colorset=bluefocus)
+```
+
+#### Calendar Period Returns
+```{r, echo=FALSE}
+    t(table.CalendarReturns(temp$returns))
+```
+
+#### Detailed Statistics of Monthly Returns
+```{r, echo=FALSE}
+    table.Stats(temp$returns)
+```
+
+#### Allocations among Asset Asset Classes
+```{r, echo=FALSE}
+    plot(temp$allocations,main="Allocations")
+```
+
+#### Turnover
+```{r, echo=FALSE}
+    plot(temp$turnover.monthly,
+                 main=paste("Monthly Turnover (Mean=",round(100*temp$turnover.mean,2),"%)",sep=""))
+            abline(h=temp$turnover.mean,col="red")
+```
+
+### Significance (Is this luck?)
+We use a straightforward, intuitive approach to addressing the question as to whether this performance might be due to luck.  Imagine 5,000 investors who each month randomly pick 3 of the 6 asset classes and equal weight them.  The following plot shows that the return/drawdown of our strategy is more attractive and the 5,000 random selections. The comparison of risk is unfair in the our strategy could hold more than 1/3 in the short-term Treasury investment.  
+```{r, echo=FALSE}
+    set.seed(101)
+    n.trials<-5000
+    ac.returns.monthly<-mom_ac_hist_ret(data,1)
+    n.classes<-ncol(ac.returns.monthly)
+    mcs_results<-mcs(ac.returns.monthly,n.trials,n.top)
+    X.min<-floor(min(maxDrawdown(faa.returns),min(mcs_results[,"MaxDD"]))*100)/100
+    X.max<-ceiling(max(maxDrawdown(faa.returns),max(mcs_results[,"MaxDD"]))*100)/100
+    Y.min<-floor(min(Return.annualized(faa.returns),min(mcs_results[,"Return"]))*100)/100
+    Y.max<-ceiling(max(Return.annualized(faa.returns),max(mcs_results[,"Return"]))*100)/100
+    plot(mcs_results[,"MaxDD"],mcs_results[,"Return"],col="gray",xlab="Max Drawdown",
+        ylab="Annual Return",main=paste("FAA v",n.trials,"Random Outcomes"),
+        xlim=c(X.min,X.max),ylim=c(Y.min,Y.max))
+    points(maxDrawdown(faa.returns)[1],Return.annualized(faa.returns)[1],col="blue",pch=2)
+    points(maxDrawdown(faa.returns)[2],Return.annualized(faa.returns)[2],col="black",pch=3)
+    points(maxDrawdown(faa.returns)[3:9],Return.annualized(faa.returns)[3:9],col="red",pch=4)
+    legend("topright",inset=.05,legend=c("Random","FAA","EqWt","AC"),pch=c(1,2,3,4),
+           col=c("gray","blue","black","red"))
+    text(maxDrawdown(faa.returns)[1]+.05,Return.annualized(faa.returns)[1],"FAA",col="blue")
+    text(maxDrawdown(faa.returns)[2]+.05,Return.annualized(faa.returns)[2],"EqWt",col="black")
+    for (i in 1:n.classes){
+        text(maxDrawdown(faa.returns)[i+2]+.05,Return.annualized(faa.returns)[i+2],sec.names[i],col="red")
+    }         
+```
+
+```{r, echo=FALSE}
+shinyApp(
+    ui=fluidPage(
+        titlePanel("Interactive Analysis (set inputs at left, select output tab on right)"),
+        sidebarLayout(
+            sidebarPanel(
+                helpText("Lookback Periods in Months"),
+                sliderInput("Lookback_mom", label = "Momentum (Return)",
+                            min = 1, max = 12, value = 4,step=1),
+                sliderInput("Lookback_vol", label = "Volatility (Std. Dev.)",
+                            min = 1, max = 12, value = 2, step=1),
+                sliderInput("Lookback_cor", label = "Correlation",
+                            min = 1, max = 12, value = 1, step=1),
+                helpText("Weights"),
+                sliderInput("Weights_retsd", label = "Ret/SD",
+                            min = 0, max = 1, value = 1, step=0.1),
+                sliderInput("Weights_cor", label = "Correlation",
+                            min = 0, max = 1, value = 0, step=0.1),
+                sliderInput("n.top", label="# of classes in which to invest",
+                            min = 1, max = length(sec.names),value = 3,step = 1),
+                sliderInput("Transaction.Costs", label = "Transaction Costs (1 way)",
+                            min = 0, max = 1, value = 0.2, step=.01),
+                sliderInput("Rolling.Window",label="Rolling Window",
+                            min=1,max=120,value=12,step=1),
+                sliderInput("n.trials",label="# of Random Trials",
+                            min=100,max=10000,value=1000,step=500)
+            ),
+            mainPanel(
+                 tabsetPanel(
+                     tabPanel("Cum", plotOutput("perfPlot")),
+                     tabPanel("Rolling",plotOutput("Rolling.Performance")),
+                     tabPanel("Summary", tableOutput("summary")),
+                     tabPanel("Calendar Returns", tableOutput("Calendar.Returns")),
+                     tabPanel("StatsTable",tableOutput("table.Stats")),
+                     tabPanel("Allocations",plotOutput("Allocations")),
+                     tabPanel("Turnover",plotOutput("Turnover")),
+                     tabPanel("Random Test",plotOutput("RandomTest")),
+                     tabPanel("Recent Signals",
+                              helpText("Below is information related to the 6 most recent signals."),
+                              textOutput("ReturnTableTitle"),
+                              tableOutput("tableReturns"),
+                              helpText("Rank of Returns (lower is better)"),
+                              tableOutput("tableReturnsRanks"),
+                              textOutput("SDTableTitle"),
+                              tableOutput("tableSD"),
+                              helpText("Rank of standard deviations (lower is better)"),
+                              tableOutput("tableSDRanks"),
+                              textOutput("CorrTableTitle"),
+                              tableOutput("tableAvgCorr"),
+                              helpText("Rank of average correlations (lower is better)"),
+                              tableOutput("tableAvgCorrRanks"),
+                              helpText("Scores (higher is better)"),
+                              tableOutput("tableScores"),
+                              helpText("Rank of Scores (lower is better"),
+                              tableOutput("tableScoresRanks"),
+                              helpText("Top Asset Classes"),
+                              tableOutput("tableTopAC"),
+                              helpText("Turnover"),
+                              tableOutput("tableTurnover"),
+                              helpText("Allocations"),
+                              tableOutput("tableAllocations")
+                     )
+                 )
+            )
+        )
+    ),
+    server = function(input, output) {
+        faa.study<-reactive({
+            lookback.num<-c(as.numeric(input$Lookback_mom),as.numeric(input$Lookback_vol),as.numeric(input$Lookback_cor))
+            wt.num<-c(as.numeric(input$Weights_retsd),0,as.numeric(input$Weights_cor))
+            faa.out<-faa(data,lookback.num,wt=wt.num,n.top=input$n.top,cash.col=safe.ac,data.type = data.type,
+                         tc=input$Transaction.Costs/100)
+            names(faa.out$returns)[1]<-"Strategy"
+            names(faa.out$returns)[2]<-"Benchmark"
+            faa.out
+        })
+        
+        recent.signal<-reactive({
+            lookback.num<-c(as.numeric(input$Lookback_mom),as.numeric(input$Lookback_vol),as.numeric(input$Lookback_cor))
+            wt.num<-c(as.numeric(input$Weights_retsd),0,as.numeric(input$Weights_cor))
+            n.top<-input$n.top
+            signal.out<-faa.signal(data,lookback=lookback.num,wt=wt.num,n.top=n.top,cash.col=safe.ac,
+                                   data.type=data.type)
+        })
+        
+        output$perfPlot <- renderPlot({
+            temp<-faa.study()
+            title<-paste("Performance Summary from",format(index(first(temp$returns)),"%b %Y"),"thru",
+                         format(index(last(temp$returns)),"%b %Y"))
+            charts.PerformanceSummary(temp$returns[,1:2], main=title,
+                                      geometric=FALSE, wealth.index=TRUE,ylog=TRUE,colorset=bluefocus)
+        })
+        
+        output$Rolling.Performance<-renderPlot({
+            temp<-faa.study()
+            charts.RollingPerformance(temp$returns[,1:2],Rf=temp$returns[,4,drop=FALSE],input$Rolling.Window,
+                                      colorset=bluefocus)
+        })
+        
+        output$Allocations<-renderPlot({
+            temp<-faa.study()
+            plot(temp$allocations,main="Allocations")
+        })
+        
+        output$Turnover<-renderPlot({
+            temp<-faa.study()
+            plot(temp$turnover.monthly,
+                 main=paste("Monthly Turnover (Mean=",round(100*temp$turnover.mean,2),"%)",sep=""))
+            abline(h=temp$turnover.mean,col="red")
+        })
+        
+        output$table.Stats <- renderTable({
+            temp<-faa.study()
+            table.Stats(temp$returns)
+        })
+            
+        output$summary<-renderTable({
+            temp<-faa.study()
+            round(rbind(Return.annualized(temp$returns),maxDrawdown(temp$returns))*100,1)
+        })
+        
+        output$Calendar.Returns<-renderTable({
+            temp<-faa.study()
+            t(table.CalendarReturns(temp$returns))    
+        })
+        
+        output$Timespan<- renderText({
+            temp<-faa.study()
+            paste("Results from",format(index(first(temp$returns)),"%b %Y"),"thru",
+                         format(index(last(temp$returns)),"%b %Y"))
+        })
+        
+        output$RandomTest <-renderPlot({
+            temp<-faa.study()
+            randomtest.plot(temp$returns,n.top=input$n.top,n.trials = input$n.trials)
+        })
+        
+        output$tableReturns <- renderTable({
+            temp<-recent.signal()
+            temp1<-data.frame(round(tail(temp$return.value)*100,2))
+        })
+        
+        output$tableReturnsRanks <- renderTable({
+            temp<-recent.signal()
+            temp1<-tail(temp$return.rank)
+        })
+        
+        output$tableSD <- renderTable({
+            temp<-recent.signal()
+            temp1<-round(tail(temp$sd.value)*100,2)
+        })
+        
+        output$tableSDRanks <- renderTable({
+            temp<-recent.signal()
+            temp1<-tail(temp$sd.rank)
+        })
+        
+        output$tableAvgCorr <- renderTable({
+            temp<-recent.signal()
+            temp1<-round(tail(temp$cor.value)*100,2)
+        })
+        
+        output$tableAvgCorrRanks <- renderTable({
+            temp<-recent.signal()
+            temp1<-tail(temp$cor.rank)
+        })
+        
+        output$tableScores <- renderTable({
+            temp<-recent.signal()
+            temp1<-round(tail(-temp$score.value),2)
+        })
+        
+        output$tableScoresRanks <- renderTable({
+            temp<-recent.signal()
+            temp1<-tail(temp$score.rank)
+        })
+        
+        output$tableTopAC <- renderTable({
+            temp<-recent.signal()
+            temp1<-matrix(sec.names[tail(temp$topn,6)],nrow=6,ncol=n.top,
+       dimnames=list(dimnames(tail(temp$topn,6))[[1]],paste("Rank",seq(1,n.top),sep="")))
+        })
+        
+        output$tableTurnover <- renderTable({
+            temp<-recent.signal()
+            temp1<-data.frame(Turnover=round(tail(temp$turnover.monthly)*100,2))
+        })
+        
+        output$tableAllocations <- renderTable({
+            temp<-recent.signal()
+            temp1<-round(tail(temp$allocations)*100,2)
+        })
+        
+        output$ReturnTableTitle<- renderText({
+            paste("Returns over last", input$Lookback_mom,"months (higher is better)")
+        })
+        
+        output$SDTableTitle<- renderText({
+            paste("Daily standard deviations over last", input$Lookback_vol,"months (lower is better)")
+        })
+        
+        output$CorrTableTitle<- renderText({
+            paste("Average correlations over last", input$Lookback_cor,"months (lower is better)")
+        })
+        
+},
+    options=list(height=1500)
+)
+```
+
+
+
+
